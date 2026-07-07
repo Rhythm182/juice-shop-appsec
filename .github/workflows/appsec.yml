@@ -242,3 +242,27 @@ jobs:
         with:
           sarif_file: checkov_out/results_sarif.sarif
           category: checkov
+
+  # ---------- Severity gate (policy) ----------
+  # AUDIT MODE: this gate REPORTS the count of CRITICAL dependency
+  # vulnerabilities but does NOT block, because OWASP Juice Shop is
+  # deliberately vulnerable and would fail every run. For a real
+  # application, set `continue-on-error: false` (or delete that line)
+  # to ENFORCE — the pipeline then fails whenever a CRITICAL is present.
+  # The recommended production pattern is to gate on NEW findings only,
+  # via GitHub's code-scanning pull-request severity threshold.
+  security-gate:
+    name: Policy Gate (severity threshold — audit mode)
+    runs-on: ubuntu-latest
+    needs: [trivy, gitleaks]
+    continue-on-error: true          # <-- flip to false to ENFORCE
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on CRITICAL dependency vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: CRITICAL
+          exit-code: '1'
+          format: table
