@@ -95,3 +95,150 @@ jobs:
         with:
           target: 'http://localhost:3000'
           cmd_options: '-a'
+
+  codeql:
+    name: SAST (CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: codeql
+
+  container:
+    name: Container (Dockerfile lint + image scan)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hadolint
+        continue-on-error: true
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          format: sarif
+          output-file: hadolint.sarif
+          no-fail: true
+      - name: Upload Hadolint SARIF
+        if: always() && hashFiles('hadolint.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: hadolint.sarif
+          category: hadolint
+      - name: Build image
+        continue-on-error: true
+        run: docker build -t juice-shop:scan .
+      - name: Trivy image scan
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: juice-shop:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+      - name: Upload Trivy image SARIF
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+  sbom:
+    name: Supply chain (SBOM + OSV)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate SBOM (Syft)
+        continue-on-error: true
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Upload SBOM artifact
+        if: always() && hashFiles('sbom.spdx.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+      - name: OSV-Scanner
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:latest \
+            scan source -r --allow-no-lockfiles \
+            --format sarif --output-file /src/osv.sarif /src || true
+      - name: Upload OSV SARIF
+        if: always() && hashFiles('osv.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv.sarif
+          category: osv
+
+  dependency-review:
+    name: Supply chain (Dependency Review, PR only)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+
+  scorecard:
+    name: Posture (OpenSSF Scorecard)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Scorecard
+        continue-on-error: true
+        uses: ossf/scorecard-action@v2.4.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+      - name: Upload Scorecard SARIF
+        if: always() && hashFiles('scorecard.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard
+
+  checkov:
+    name: IaC (Checkov)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkov
+        continue-on-error: true
+        uses: bridgecrewio/checkov-action@master
+        with:
+          output_format: sarif
+          output_file_path: checkov_out
+      - name: Upload Checkov SARIF
+        if: always() && hashFiles('checkov_out/results_sarif.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov_out/results_sarif.sarif
+          category: checkov
